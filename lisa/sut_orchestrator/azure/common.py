@@ -212,14 +212,10 @@ class AzureVmPurchasePlanSchema:
 @dataclass_json
 @dataclass
 class AzureImageSchema(schema.ImageSchema):
-    architecture: Union[
-        schema.ArchitectureType, search_space.SetSpace[schema.ArchitectureType]
-    ] = field(  # type: ignore
-        default_factory=partial(
-            search_space.SetSpace,
-            is_allow_set=True,
-            items=[schema.ArchitectureType.x64, schema.ArchitectureType.Arm64],
-        ),
+    architecture: Optional[
+        Union[schema.ArchitectureType, search_space.SetSpace[schema.ArchitectureType]]
+    ] = field(
+        default=None,
         metadata=field_metadata(
             decoder=partial(
                 search_space.decode_nullable_set_space,
@@ -229,19 +225,17 @@ class AzureImageSchema(schema.ImageSchema):
                     schema.ArchitectureType.x64,
                     schema.ArchitectureType.Arm64,
                 ],
-            )
+            ),
+            required=False,
+            allow_none=True,
         ),
     )
     disk_controller_type: Optional[
         Union[
             search_space.SetSpace[schema.DiskControllerType], schema.DiskControllerType
         ]
-    ] = field(  # type:ignore
-        default_factory=partial(
-            search_space.SetSpace,
-            is_allow_set=True,
-            items=[schema.DiskControllerType.SCSI, schema.DiskControllerType.NVME],
-        ),
+    ] = field(
+        default=None,
         metadata=field_metadata(
             decoder=partial(
                 search_space.decode_nullable_set_space,
@@ -251,52 +245,36 @@ class AzureImageSchema(schema.ImageSchema):
                     schema.DiskControllerType.SCSI,
                     schema.DiskControllerType.NVME,
                 ],
-            )
+            ),
+            required=False,
+            allow_none=True,
         ),
     )
-    hyperv_generation: Optional[
-        Union[search_space.SetSpace[int], int]
-    ] = field(  # type:ignore
-        default_factory=partial(
-            search_space.SetSpace,
-            is_allow_set=True,
-            items=[1, 2],
-        ),
+    hyperv_generation: Optional[Union[search_space.SetSpace[int], int]] = field(
+        default=None,
         metadata=field_metadata(
-            decoder=partial(search_space.decode_set_space_by_type, base_type=int)
+            decoder=partial(search_space.decode_set_space_by_type, base_type=int),
+            required=False,
+            allow_none=True,
         ),
     )
     network_data_path: Optional[
         Union[search_space.SetSpace[schema.NetworkDataPath], schema.NetworkDataPath]
-    ] = field(  # type: ignore
-        default_factory=partial(
-            search_space.SetSpace,
-            is_allow_set=True,
-            items=[
-                schema.NetworkDataPath.Synthetic,
-                schema.NetworkDataPath.Sriov,
-            ],
-        ),
+    ] = field(
+        default=None,
         metadata=field_metadata(
             decoder=partial(
                 search_space.decode_set_space_by_type,
                 base_type=schema.NetworkDataPath,
-            )
+            ),
+            required=False,
+            allow_none=True,
         ),
     )
-    security_profile: Union[
-        search_space.SetSpace[SecurityProfileType], SecurityProfileType
-    ] = field(  # type:ignore
-        default_factory=partial(
-            search_space.SetSpace,
-            is_allow_set=True,
-            items=[
-                SecurityProfileType.Standard,
-                SecurityProfileType.SecureBoot,
-                SecurityProfileType.CVM,
-                SecurityProfileType.Stateless,
-            ],
-        ),
+    security_profile: Optional[
+        Union[search_space.SetSpace[SecurityProfileType], SecurityProfileType]
+    ] = field(
+        default=None,
         metadata=field_metadata(
             decoder=partial(
                 search_space.decode_nullable_set_space,
@@ -308,7 +286,17 @@ class AzureImageSchema(schema.ImageSchema):
                     SecurityProfileType.CVM,
                     SecurityProfileType.Stateless,
                 ],
-            )
+            ),
+            required=False,
+            allow_none=True,
+        ),
+    )
+    encrypt_disk: Optional[Union[search_space.SetSpace[bool], bool]] = field(
+        default=None,
+        metadata=field_metadata(
+            decoder=partial(search_space.decode_set_space_by_type, base_type=bool),
+            required=False,
+            allow_none=True,
         ),
     )
 
@@ -327,11 +315,16 @@ class AzureImageSchema(schema.ImageSchema):
 
     def _parse_info(self, raw_features: Dict[str, Any], log: Logger) -> None:
         """Parse raw image tags to AzureImageSchema"""
-        self._parse_architecture(raw_features, log)
-        self._parse_disk_controller_type(raw_features, log)
-        self._parse_hyperv_generation(raw_features, log)
-        self._parse_network_data_path(raw_features, log)
-        self._parse_security_profile(raw_features, log)
+        if self.architecture is None:
+            self._parse_architecture(raw_features, log)
+        if self.disk_controller_type is None:
+            self._parse_disk_controller_type(raw_features, log)
+        if self.hyperv_generation is None:
+            self._parse_hyperv_generation(raw_features, log)
+        if self.network_data_path is None:
+            self._parse_network_data_path(raw_features, log)
+        if self.security_profile is None:
+            self._parse_security_profile(raw_features, log)
 
     def _parse_architecture(self, raw_features: Dict[str, Any], log: Logger) -> None:
         arch = raw_features.get("architecture")
@@ -379,21 +372,28 @@ class AzureImageSchema(schema.ImageSchema):
         self, raw_features: Dict[str, Any], log: Logger
     ) -> None:
         security_profile = raw_features.get("SecurityType")
-        capabilities: List[SecurityProfileType] = []
+        security_profile_capabilities: List[SecurityProfileType] = []
+        encrypt_capability: List[bool] = [False]
         if security_profile in ["TrustedLaunchSupported", "TrustedLaunch"]:
-            capabilities.append(SecurityProfileType.Standard)
-            capabilities.append(SecurityProfileType.SecureBoot)
+            security_profile_capabilities.extend(
+                [SecurityProfileType.Standard, SecurityProfileType.SecureBoot]
+            )
         elif security_profile in (
             "TrustedLaunchAndConfidentialVmSupported",
             "ConfidentialVmSupported",
             "ConfidentialVM",
         ):
-            capabilities.append(SecurityProfileType.CVM)
-            capabilities.append(SecurityProfileType.Stateless)
+            security_profile_capabilities.extend(
+                [SecurityProfileType.CVM, SecurityProfileType.Stateless]
+            )
+            encrypt_capability.append(True)
         else:
-            capabilities.append(SecurityProfileType.Standard)
+            security_profile_capabilities.append(SecurityProfileType.Standard)
 
-        self.security_profile = search_space.SetSpace(True, capabilities)
+        self.security_profile = search_space.SetSpace(
+            True, security_profile_capabilities
+        )
+        self.encrypt_disk = search_space.SetSpace(True, encrypt_capability)
 
 
 def _get_image_tags(image: Any) -> Dict[str, Any]:
@@ -538,6 +538,7 @@ class VhdSchema(AzureImageSchema):
                     SecurityProfileType.Stateless,
                 ],
             )
+            self.encrypt_disk = search_space.SetSpace(True, [True, False])
         else:
             self.security_profile = search_space.SetSpace(
                 True,
@@ -546,6 +547,7 @@ class VhdSchema(AzureImageSchema):
                     SecurityProfileType.SecureBoot,
                 ],
             )
+            self.encrypt_disk = search_space.SetSpace(True, [False])
 
 
 @dataclass_json()
@@ -1028,7 +1030,13 @@ class AzureNodeSchema:
 
         if isinstance(raw_data, dict):
             normalized_data = {
-                k: (v.lower() if isinstance(v, str) and hasattr(schema_type, k) else v)
+                k: (
+                    v.lower()
+                    if isinstance(v, str)
+                    and not isinstance(v, Enum)
+                    and hasattr(schema_type, k)
+                    else v
+                )
                 for k, v in raw_data.items()
             }
             prop_value = schema.load_by_type(schema_type, normalized_data)
@@ -1834,6 +1842,7 @@ def check_or_create_resource_group(
     location: str,
     log: Logger,
     managed_by: str = "",
+    resource_group_tags: Optional[Dict[str, str]] = None,
 ) -> None:
     with get_resource_management_client(
         credential, subscription_id, cloud
@@ -1845,7 +1854,9 @@ def check_or_create_resource_group(
         if not az_shared_rg_exists:
             log.info(f"Creating Resource group: '{resource_group_name}'")
 
-            rg_properties = {"location": location}
+            rg_properties: Dict[str, Any] = {"location": location}
+            if resource_group_tags:
+                rg_properties["tags"] = resource_group_tags
             if managed_by:
                 log.debug(f"Using managed_by resource group: '{managed_by}'")
                 rg_properties["managed_by"] = managed_by

@@ -51,7 +51,7 @@ from lisa.features.security_profile import (
 from lisa.features.startstop import VMStatus
 from lisa.node import Node, RemoteNode
 from lisa.operating_system import BSD, CBLMariner, CentOs, Redhat, Suse, Ubuntu
-from lisa.search_space import RequirementMethod
+from lisa.search_space import RequirementMethod, decode_set_space_by_type
 from lisa.secret import add_secret
 from lisa.tools import (
     Cat,
@@ -1098,7 +1098,7 @@ class NetworkInterface(AzureFeatureMixin, features.NetworkInterface):
 
     def reload_module(self) -> None:
         modprobe_tool = self._node.tools[Modprobe]
-        modprobe_tool.reload(["hv_netvsc"])
+        modprobe_tool.reload("hv_netvsc")
 
     # Subroutine for applying route table to subnet.
     # We don't want to retry the entire routine if we
@@ -2564,7 +2564,10 @@ class SecurityProfile(AzureFeatureMixin, features.SecurityProfile):
     ) -> Optional[schema.FeatureSettings]:
         raw_capabilities: Any = kwargs.get("raw_capabilities")
         resource_sku: Any = kwargs.get("resource_sku")
-        capabilities: List[SecurityProfileType] = [SecurityProfileType.Standard]
+        security_profile_capabilities: List[SecurityProfileType] = [
+            SecurityProfileType.Standard
+        ]
+        encrypt_capability: List[bool] = [False]
 
         gen_value = raw_capabilities.get("HyperVGenerations", None)
         cvm_value = raw_capabilities.get("ConfidentialComputingType", None)
@@ -2581,17 +2584,18 @@ class SecurityProfile(AzureFeatureMixin, features.SecurityProfile):
                 and ("V2" in str(gen_value))
                 and raw_capabilities.get("TrustedLaunchDisabled", "False") == "False"
             ):
-                capabilities.append(SecurityProfileType.SecureBoot)
+                security_profile_capabilities.append(SecurityProfileType.SecureBoot)
 
         if cvm_value and cvm_value.casefold() == "snp":
-            capabilities.append(SecurityProfileType.CVM)
-
+            security_profile_capabilities.append(SecurityProfileType.CVM)
+            encrypt_capability.append(True)
         if cvm_value and cvm_value.casefold() == "tdx":
-            capabilities.append(SecurityProfileType.CVM)
-            capabilities.append(SecurityProfileType.Stateless)
-
+            security_profile_capabilities.append(SecurityProfileType.CVM)
+            security_profile_capabilities.append(SecurityProfileType.Stateless)
+            encrypt_capability.append(True)
         return SecurityProfileSettings(
-            security_profile=search_space.SetSpace(True, capabilities)
+            security_profile=search_space.SetSpace(True, security_profile_capabilities),
+            encrypt_disk=search_space.SetSpace(True, encrypt_capability),
         )
 
     @classmethod
@@ -2599,7 +2603,9 @@ class SecurityProfile(AzureFeatureMixin, features.SecurityProfile):
         cls, image: schema.ImageSchema
     ) -> Optional[schema.FeatureSettings]:
         assert isinstance(image, AzureImageSchema), f"actual: {type(image)}"
-        return SecurityProfileSettings(security_profile=image.security_profile)
+        if image.security_profile:
+            return SecurityProfileSettings(security_profile=image.security_profile)
+        return None
 
     @classmethod
     def on_before_deployment(cls, *args: Any, **kwargs: Any) -> None:
@@ -2618,6 +2624,7 @@ class SecurityProfile(AzureFeatureMixin, features.SecurityProfile):
                 settings = security_profile[0]
                 assert isinstance(settings, SecurityProfileSettings)
                 assert isinstance(settings.security_profile, SecurityProfileType)
+                assert isinstance(settings.encrypt_disk, bool)
                 node_parameters.security_profile[
                     "security_type"
                 ] = cls._security_profile_mapping[settings.security_profile]
@@ -2707,9 +2714,12 @@ class Availability(AzureFeatureMixin, features.Availability):
             availability_settings.availability_type.add(
                 AvailabilityType.AvailabilityZone
             )
-            availability_settings.availability_zones = search_space.SetSpace(
-                is_allow_set=True, items=availability_zones
-            )
+            set_space = decode_set_space_by_type(data=availability_zones, base_type=int)
+            if not isinstance(set_space, search_space.SetSpace):
+                raise LisaException(
+                    f"Failed to parse availability zones: {availability_zones}."
+                )
+            availability_settings.availability_zones = set_space
 
         return availability_settings
 
@@ -3473,7 +3483,9 @@ class Architecture(AzureFeatureMixin, Feature):
         cls, image: schema.ImageSchema
     ) -> Optional[schema.FeatureSettings]:
         assert isinstance(image, AzureImageSchema), f"actual: {type(image)}"
-        return ArchitectureSettings(arch=image.architecture)
+        if image.architecture:
+            return ArchitectureSettings(arch=image.architecture)
+        return None
 
     @classmethod
     def settings_type(cls) -> Type[schema.FeatureSettings]:
